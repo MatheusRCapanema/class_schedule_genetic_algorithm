@@ -2,7 +2,7 @@ import random
 
 NUMB_OF_ELITE_SCHEDULES = 1
 POPULATION_SIZE = 9
-MUTATION_RATE = 0.3
+MUTATION_RATE = 0.1
 TOURNAMENT_SELECTION_SIZE = 3
 
 
@@ -110,82 +110,89 @@ class Schedule:
         self.class_numb = 0
         self.is_fitness_changed = True
 
-    def initialize(self):
-        self.classes = []
-        for dept in self.data.get_departments():
-            for course in dept.get_courses():
-                new_class = Class(self.class_numb, dept, course)
+    def initialize(self, empty=False):
+        if empty:
+            return self
+        depts = self.data.get_departments()
+        grade = 'A'  # Alternar entre as grades A e B para cada classe
+        for dept in depts:
+            for course in dept.courses:
+                new_class = Class(self.class_numb, dept, course, grade)
                 self.class_numb += 1
-                self.classes.append(new_class)
-        self.distribute_classes_evenly()
-        self.is_fitness_changed = True
+                new_class.set_instructor(course.instructors[random.randrange(0, len(course.instructors))])
+
+                # Tenta alocar um horário e sala que não causem conflitos
+                allocated = False
+                attempts = 0
+                while not allocated and attempts < 100:
+                    mt_index = random.randrange(0, len(self.data.get_meeting_times()))
+                    meeting_time = self.data.get_meeting_times()[mt_index]
+                    room_index = random.randrange(0, len(self.data.get_rooms()))
+                    room = self.data.get_rooms()[room_index]
+                    instructor = course.instructors[random.randrange(0, len(course.instructors))]
+
+                    if self.is_slot_available(meeting_time, room, instructor, grade):
+                        new_class.set_meeting_time(meeting_time)
+                        new_class.set_room(room)
+                        new_class.set_instructor(instructor)
+                        allocated = True
+                        self.classes.append(new_class)
+                    attempts += 1
+
+                # Alternar grade para a próxima classe
+                grade = 'B' if grade == 'A' else 'A'
+
         return self
 
-    def distribute_classes_evenly(self):
-        meeting_times = self.data.get_meeting_times()
-        rooms = self.data.get_rooms()
-        instructors = self.data.get_instructors()
+    def is_slot_available(self, meeting_time, room, instructor, grade):
+        for c in self.classes:
+            if c.grade != grade:  # Ignora classes de outra grade
+                continue
+            if c.meeting_time == meeting_time and (c.room == room or c.instructor == instructor):
+                # Verifica conflitos de horário, sala e instrutor
+                return False
+        return True
 
-        # Assegura que cada dia da semana tenha pelo menos uma aula.
-        day_classes = {day[1]: [] for day in self.data.MEETING_TIMES}
+    def mutate_schedule(self):
+        # Iterate through all classes in the schedule
         for class_ in self.classes:
-            day = random.choice(list(day_classes.keys()))
-            time = random.choice(meeting_times)
-            room = random.choice(rooms)
-            instructor = random.choice(instructors)
+            # Apply mutation based on the mutation rate
+            if random.random() < MUTATION_RATE:
+                # Randomly change the meeting time of the class
+                new_meeting_time = self.data.get_meeting_times()[
+                    random.randrange(0, len(self.data.get_meeting_times()))]
+                class_.set_meeting_time(new_meeting_time)
 
-            class_.set_meeting_time(time)
-            class_.set_room(room)
-            class_.set_instructor(instructor)
-            day_classes[day].append(class_)
+                # Randomly change the room of the class
+                new_room = self.data.get_rooms()[random.randrange(0, len(self.data.get_rooms()))]
+                class_.set_room(new_room)
 
-        # Verifica se algum dia ficou sem aulas e redistribui se necessário
-        for day in day_classes.keys():
-            if not day_classes[day]:  # Se o dia estiver vazio
-                # Escolhe uma classe aleatória para realocar neste dia
-                random_class = random.choice(self.classes)
-                random_time = random.choice(meeting_times)
-                random_class.set_meeting_time(random_time)
-                day_classes[day].append(random_class)
+                # Note: You may want to add additional logic here to ensure
+                # the new meeting time and room are valid (e.g., no conflicts with other classes)
 
-    def select_time_room_instructor(self, course):
-        available_times = self.data.get_meeting_times()
-        available_rooms = self.data.get_rooms()
-        available_instructors = course.instructors
-
-        while available_times and available_rooms and available_instructors:
-            meeting_time = random.choice(available_times)
-            room = random.choice(available_rooms)
-            instructor = random.choice(available_instructors)
-
-            if not self.is_time_room_instructor_conflict(meeting_time, room, instructor):
-                return meeting_time, room, instructor
-        return None, None, None
-
-    def is_time_room_instructor_conflict(self, meeting_time, room, instructor):
-        for existing_class in self.classes:
-            if existing_class.meeting_time.id == meeting_time.id:
-                if existing_class.room.number == room.number:
-                    return True
-                if existing_class.instructor.id == instructor.id:
-                    return True
-        return False
-
-    def calculate_fitness(self):
-        self.number_of_conflicts = 0
-        # Verifica conflitos de sala e instrutor no mesmo horário
-        for i in range(len(self.classes)):
-            for j in range(len(self.classes)):
-                if i != j:
-                    if self.classes[i].meeting_time == self.classes[j].meeting_time and \
-                       (self.classes[i].room == self.classes[j].room or self.classes[i].instructor == self.classes[j].instructor):
-                        self.number_of_conflicts += 1
-        self.fitness = 1 / (1.0 * self.number_of_conflicts + 1)
-        self.is_fitness_changed = False
-        return self.fitness
+        # After mutation, set flag to recalculate fitness
+        self.is_fitness_changed = True
 
     def get_classes(self):
         return self.classes
+
+    def calculate_fitness(self):
+        self.number_of_conflicts = 0
+        classes = self.get_classes()
+        for i in range(len(classes)):
+            # Verifica se a capacidade da sala atende ao número de estudantes
+            if classes[i].room.get_seating_capacity() < classes[i].course.get_num_students():
+                self.number_of_conflicts += 1
+            for j in range(len(classes)):
+                if j > i:
+                    if classes[i].meeting_time == classes[j].meeting_time and classes[i].id != classes[j].id:
+                        if classes[i].room == classes[j].room or classes[i].instructor == classes[j].instructor:
+                            self.number_of_conflicts += 1
+                        if set(classes[i].course.get_semesters()) & set(classes[j].course.get_semesters()):
+                            self.number_of_conflicts += 1
+        self.fitness = 1 / (1.0 * self.number_of_conflicts + 1)
+        self.is_fitness_changed = False
+        return self.fitness
 
     def get_fitness(self):
         if self.is_fitness_changed:
@@ -205,32 +212,29 @@ class Population:
 
 
 class GeneticAlgorithm:
-    @staticmethod
-    def evolve(population):
-        return GeneticAlgorithm.mutate_population(GeneticAlgorithm.crossover_population(population))
+    def evolve(self, population):
+        return self.mutate_population(self.crossover_population(population))
 
-    @staticmethod
-    def crossover_population(pop):
+    def crossover_population(self, pop):
         crossover_pop = Population(0, pop.get_schedules()[0].data)
         for i in range(NUMB_OF_ELITE_SCHEDULES):
             crossover_pop.get_schedules().append(pop.get_schedules()[i])
         i = NUMB_OF_ELITE_SCHEDULES
         while i < POPULATION_SIZE:
-            schedule1 = GeneticAlgorithm.select_tournament_population(pop).get_schedules()[0]
-            schedule2 = GeneticAlgorithm.select_tournament_population(pop).get_schedules()[0]
-            crossover_pop.get_schedules().append(GeneticAlgorithm.crossover_schedule(schedule1, schedule2))
+            schedule1 = self.select_tournament_population(pop).get_schedules()[0]
+            schedule2 = self.select_tournament_population(pop).get_schedules()[0]
+            crossover_pop.get_schedules().append(self.crossover_schedule(schedule1, schedule2))
             i += 1
         return crossover_pop
 
-    @staticmethod
-    def mutate_population(population):
+    def mutate_population(self, population):
         for i in range(NUMB_OF_ELITE_SCHEDULES, POPULATION_SIZE):
-            GeneticAlgorithm.mutate_schedule(population.get_schedules()[i])
+            self.mutate_schedule(population.get_schedules()[i])
         return population
 
     @staticmethod
     def crossover_schedule(schedule1, schedule2):
-        crossover_schedule = Schedule(schedule1.data).initialize()
+        crossover_schedule = Schedule(schedule1.data).initialize(empty=True)  # Inicializa sem preencher as classes
         min_len = min(len(schedule1.get_classes()), len(schedule2.get_classes()))
         for i in range(min_len):
             if random.random() > 0.5:
@@ -243,10 +247,16 @@ class GeneticAlgorithm:
     def mutate_schedule(mutate_schedule):
         for class_ in mutate_schedule.get_classes():
             if MUTATION_RATE > random.random():
+                # Randomly change the meeting time and/or room of the class
                 new_meeting_time = random.choice(mutate_schedule.data.get_meeting_times())
                 new_room = random.choice(mutate_schedule.data.get_rooms())
+
+                # Directly setting the new meeting time and room without is_slot_available check
+                # It's assumed you will handle potential conflicts or validate the schedule elsewhere
                 class_.set_meeting_time(new_meeting_time)
                 class_.set_room(new_room)
+
+        # Recalculate the fitness of the schedule as its configuration has changed
         mutate_schedule.calculate_fitness()
 
     @staticmethod
@@ -383,7 +393,7 @@ class Class:
 def run_genetic_algorithm():
     data = Data()
     generation_number = 0
-    max_generations = 1000  # Define um limite para o número de gerações para evitar um loop infinito
+    max_generations = 10000  # Define um limite para o número de gerações para evitar um loop infinito
 
     # Inicializa a população
     population = Population(POPULATION_SIZE, data)
@@ -410,7 +420,6 @@ def run_genetic_algorithm():
 def print_schedule_by_semester(best_schedule):
     # Organize courses by semester, day of the week, and time
     schedule_by_semester = {}
-    day_order = {mt[1]: i for i, mt in enumerate(Data.MEETING_TIMES)}  # Maps days to their order
 
     for class_ in best_schedule.get_classes():
         for semester in class_.course.get_semesters():
